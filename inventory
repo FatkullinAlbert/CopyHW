@@ -1,0 +1,9 @@
+[backup]
+192.168.56.160
+
+[client]
+192.168.56.150
+
+[all:children]
+backup
+client

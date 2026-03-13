@@ -1,0 +1,5 @@
+---
+borg_passphrase: "MySecretPassphrase123"
+backup_repo: "borg@192.168.56.160:/var/backup"
+backup_target: "/etc"
+borg_user: "borg"

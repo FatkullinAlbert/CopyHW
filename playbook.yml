@@ -1,0 +1,146 @@
+---
+- name: Configure backup server
+  hosts: backup
+  vars_files:
+    - vars/main.yml
+  tasks:
+    - name: Install borgbackup
+      apt:
+        name: borgbackup
+        state: present
+        update_cache: yes
+
+    - name: Create borg user
+      user:
+        name: "{{ borg_user }}"
+        home: "{{ borg_home }}"
+        shell: /bin/bash
+        state: present
+
+    - name: Create .ssh directory for borg user
+      file:
+        path: "{{ borg_home }}/.ssh"
+        state: directory
+        owner: "{{ borg_user }}"
+        group: "{{ borg_user }}"
+        mode: '0700'
+
+    - name: Create authorized_keys file
+      file:
+        path: "{{ borg_home }}/.ssh/authorized_keys"
+        state: touch
+        owner: "{{ borg_user }}"
+        group: "{{ borg_user }}"
+        mode: '0600'
+
+    - name: Partition and format second disk (if not already done)
+      parted:
+        device: /dev/sdb
+        number: 1
+        state: present
+        part_end: 100%
+      when: ansible_devices.sdb is defined
+
+    - name: Create filesystem on /dev/sdb1
+      filesystem:
+        fstype: ext4
+        dev: /dev/sdb1
+      when: ansible_devices.sdb is defined
+
+    - name: Mount /dev/sdb1 to /var/backup
+      mount:
+        path: /var/backup
+        src: /dev/sdb1
+        fstype: ext4
+        opts: defaults
+        state: mounted
+      when: ansible_devices.sdb is defined
+
+    - name: Set ownership of /var/backup
+      file:
+        path: /var/backup
+        owner: "{{ borg_user }}"
+        group: "{{ borg_user }}"
+        recurse: yes
+
+- name: Configure client
+  hosts: client
+  vars_files:
+    - vars/main.yml
+  tasks:
+    - name: Install borgbackup
+      apt:
+        name: borgbackup
+        state: present
+        update_cache: yes
+
+    - name: Generate SSH key for root (if not exists)
+      openssh_keypair:
+        path: /root/.ssh/id_rsa
+        type: rsa
+        size: 4096
+        state: present
+        force: no
+
+    - name: Fetch public key
+      slurp:
+        src: /root/.ssh/id_rsa.pub
+      register: pubkey
+
+    - name: Add public key to backup server's authorized_keys
+      authorized_key:
+        user: "{{ borg_user }}"
+        key: "{{ pubkey['content'] | b64decode }}"
+        state: present
+      delegate_to: 192.168.56.160
+
+    - name: Create directory for Borg environment file
+      file:
+        path: /etc/borg-backup
+        state: directory
+        mode: '0700'
+
+    - name: Create environment file with passphrase
+      copy:
+        dest: /etc/borg-backup/env
+        content: |
+          BORG_PASSPHRASE={{ borg_passphrase }}
+          REPO={{ backup_repo }}
+          BACKUP_TARGET={{ backup_target }}
+        mode: '0600'
+
+    - name: Check if repository is already initialized
+      command: borg list "{{ backup_repo }}"
+      environment:
+        BORG_PASSPHRASE: "{{ borg_passphrase }}"
+      register: repo_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Initialize Borg repository if needed
+      command: borg init --encryption=repokey-blake2 "{{ backup_repo }}"
+      environment:
+        BORG_PASSPHRASE: "{{ borg_passphrase }}"
+      when: repo_check.rc != 0
+
+    - name: Copy systemd service unit
+      copy:
+        src: files/borg-backup.service
+        dest: /etc/systemd/system/borg-backup.service
+        mode: '0644'
+
+    - name: Copy systemd timer unit
+      copy:
+        src: files/borg-backup.timer
+        dest: /etc/systemd/system/borg-backup.timer
+        mode: '0644'
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start borg-backup.timer
+      systemd:
+        name: borg-backup.timer
+        enabled: yes
+        state: started

@@ -1,0 +1,22 @@
+[Unit]
+Description=Borg Backup
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/borg-backup/env
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=borg-backup
+
+# Create backup
+ExecStart=/bin/borg create --stats --list ${REPO}::"etc-{now:%%Y-%%m-%%d_%%H:%%M:%%S}" ${BACKUP_TARGET}
+
+# Verify repository consistency
+ExecStart=/bin/borg check ${REPO}
+
+# Prune old backups according to policy:
+# - Keep all backups from the last 3 months (--keep-within 3m)
+# - Keep the last backup of each month for the last 12 months (--keep-monthly 12)
+# - Keep one yearly backup (--keep-yearly 1)
+ExecStart=/bin/borg prune --keep-within 3m --keep-monthly 12 --keep-yearly 1 ${REPO}
